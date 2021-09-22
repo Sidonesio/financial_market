@@ -83,7 +83,7 @@ stocks_both <-  tq_get(stocks_start_end,
                        from = "2018-09-16", 
                        to = "2021-09-18")
 
-# filter stocks that were traded at least in a monthly basis
+# filter stocks that were traded at least once a week
 stocks_subset <- stocks_both %>%
   group_by(symbol, yr = year(date), mon = month(date), week = week(date)) %>%
   summarise(volume_avg = mean(volume, na.rm = TRUE)) %>%

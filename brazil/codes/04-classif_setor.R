@@ -37,8 +37,6 @@ setor %>%
 setor %>%
   tail(n = 30) %>%
   print(n = Inf)
-colnames(setor)
-glimpse(setor)
 
 # change data set column names
 colnames <- c("setor_economico", "subsetor", "segmento", "symbol", "listagem")
@@ -71,13 +69,16 @@ setor <- setor %>%
   mutate(segmento2 = case_when(
     str_ends(segmento, "[:lower:]") ~ segmento)) %>%
   fill(segmento2) %>%
-  select(-segmento) %>%
-  rename(segmento = segmento2)  %>%
-  select(setor_economico, subsetor, segmento, symbol, listagem)
+  rename(nome = segmento,
+         segmento = segmento2)
 
 # remove rows where symbol is equal to NA
 setor <- setor %>%
   filter(!is.na(symbol))
+
+# reorder columns
+setor <- setor %>%
+  select(setor_economico, subsetor, segmento, nome, symbol, listagem)
 
 # save object
 save(setor, file = here("brazil", "data", "04-setor.rda"))

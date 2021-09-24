@@ -1,0 +1,432 @@
+---
+title: "Como obter a correlação entre ações e juros reais brasileiros"
+author: "Sidney da S. P. Bissoli"
+date: "22/09/2021"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(warning = FALSE, message = FALSE, fig.align = "center")
+```
+
+## 1. Introdução
+
+A teoria de finanças aponta que uma carteira de investimentos deve ser formada por ativos descorrelacionados. Essa é a melhor forma de obter uma ótima relação risco-retorno; ou, em outras palavras, de diminuir o risco da carteira para um dado nível de retorno, ou de aumentar o retorno para um dado nível de risco. 
+
+Há muitas formas de montar uma carteira diversificada. Existe, naturalmente, a diversificação geográfica, expondo a carteira a diversos países, diluindo, assim, o risco de cada país individualmente. Há também a diversificação por classes de ativos. Nessa lógica, uma carteira seria composta por títulos públicos e privados, moedas, commodities, ações e até mesmo criptoativos. Contudo, mesmo dentro de uma mesma classe de ativos, é possível pensar em diversificar de forma inteligente. Por exemplo, em relação ao mercado acionário, é desejável montar a carteira com ações expostas a diferentes fatores, e que não se movem, portanto, exatamente na mesma direção. 
+
+Nesse artigo, exploraremos a associação de ações brasileiras aos juros reais de longo prazo, de modo a identificar as que são mais e menos sensíveis à trajetória dos juros. 
+
+## 2. Preparando o ambiente de trabalho no R
+
+Primeiramente, instalaremos (caso não estejam instalados) e carregaremos, por meio do pacote *pacman*, os pacotes que serão necessários ao longo do presente estudo.
+
+```{r pacotes}
+# instalar o pacote "pacman" caso ele não esteja instalado
+if (!require("pacman")) install.packages("pacman")
+# carregar e instalar (se necessário) os pacotes necessários
+p_load(GetTDData, tidyverse, janitor, here, knitr, kableExtra, scales, tidyquant, rvest, downloader, utils, readxl, fuzzyjoin)
+```
+
+## 3. Obtendo os dados
+
+### 3.1. Juros reais
+
+Utilizaremos as taxas de juros das NTNBs de prazos entre 7 e 13 anos como *proxy*
+dos juros reais. O pacote [getTDData](https://cran.r-project.org/web/packages/GetTDData/GetTDData.pdf) permite que façamos o *download* de arquivos que contêm preços e retornos de títulos públicos brasileiros, direto do *site* do [Tesouro Direto](https://www.tesourodireto.com.br/titulos/historico-de-precos-e-taxas.htm).
+
+```{r download tesouro direto, results = FALSE}
+# download dos arquivos referentes às NTNBs
+download.TD.data(asset.codes = "NTN-B", 
+                 dl.folder = here("brazil", "data", "tesouro_direto"))
+```
+
+Após o *download*, faremos o R ler estes arquivos. 
+
+```{r load data bonds, results = FALSE}
+# carregar dados
+ntnb <- read.TD.files(dl.folder = here("brazil", "data", "tesouro_direto"), 
+                      asset.codes = "NTN-B") %>%
+  as_tibble()
+```
+
+Notar que o argumento **dl.folder** direciona para o mesmo local em ambas as funções (**download.TD.data** e **read.TD.files**), pois o R deve procurar o arquivo no diretório aonde ele foi salvo na máquina. Vejamos os dados propriamente ditos.
+
+```{r view data bonds}
+# converter os nomes das colunas para um formato mais apropriado para máquinas
+ntnb <- ntnb %>%
+  clean_names()
+# visualizar o banco de dados
+kable(head(ntnb)) %>%
+   kable_styling("striped", "bordered")
+kable(tail(ntnb)) %>%
+   kable_styling("striped", "bordered")
+```
+
+A série temporal compreende ago/2008 a set/2021. Contudo, queremos apenas as **NTNB-s** (não queremos as **NTNB Principal**). 
+
+```{r filter NTNB}
+# selecionar apenas as NTNBs
+ntnbs <- ntnb %>%
+  filter(!grepl("Principal", asset_code))
+```
+
+Na continuidade, criaremos uma variável que corresponderá à diferença entre a data de vencimento do título e a data de referência, expressa em anos (na verdade, duas, pois uma será a diferença arredondada).
+
+```{r duration in years}
+# computar intervalo entre data de referência e vencimento do título
+ntnbs <- ntnbs %>%
+  mutate(diff_years = interval(ref_date, matur_date) %>% as.numeric("years"),
+         diff_years_round = round(diff_years, 0))
+kable(head(ntnbs), digits = 4) %>%
+  kable_styling("striped", "bordered")
+```
+
+Três anos de série temporal é o suficiente para os propósitos deste estudo. Faremos esta seleção temporal, e ficaremos apenas com as observações cujo intervalo entre a data de referência e o vencimento do título varia entre 7 e 13 anos. Isso porque queremos saber o impacto nos juros de **longo prazo** no desempenho das ações.
+
+```{r filter time series and duration bonds}
+# selecionar a série temporal e o "duration" dos juros
+real_return <- ntnbs %>%
+  filter(ref_date >= "2018-09-14" & ref_date <= "2021-09-17",
+         diff_years_round %in% c(7:13)) %>%
+  arrange(ref_date) %>%
+  distinct(ref_date, .keep_all = TRUE)
+kable(head(real_return), digits = 4) %>%
+  kable_styling("striped", "bordered")
+```
+
+Vejamos graficamente como ficou o banco de dados.
+
+```{r plot bonds, out.width = "75%"}
+# plotar gráfico das NTNB-s selecionadas
+title <- expression(paste("Taxa de juros de NTNBs com ", 
+                          italic("duration"), " entre 7 e 13 anos"))
+ggplot(real_return, aes(x = ref_date, y = yield_bid)) + 
+  geom_line(color = "royalblue4") + 
+  labs(x = "Data de referência",
+       y = "Taxa de juros",
+       title = title) + 
+  scale_y_continuous(labels=scales::percent) + 
+  theme_classic()
+```
+
+A vantagem dessa série temporal é que ela compreende dois ciclos: um de baixa (de 2018 a 2020); outro de alta (de 2020 até o presente momento). Finalmente, calcularemos o variação diária das taixas de juros das NTNBs.
+
+```{r bonds returns, out.width = "50%"}
+# criar banco de dados com os retornos diários de títulos públicos
+bond_return <- real_return %>%
+  tidyquant::tq_transmute(select = yield_bid,
+                          mutate_fun = periodReturn,
+                          period = "daily",
+                          col_rename = "bonds_returns") %>%
+  as_tibble()
+# mudar o nome da coluna
+bond_return <- bond_return %>%
+  rename(date = ref_date)
+kable(head(bond_return), digits = 4) %>%
+  kable_styling("striped", "bordered", full_width = F)
+```
+
+### 3.2. Papeis
+
+Para que possamos baixar as cotações ajustadas dos papeis negociados na B3, primeiramente precisamos obtê-los. Faremos isso por meio de *webscraping* do site de múltiplos de ações [Fundamentus](http://www.fundamentus.com.br/). 
+
+```{r}
+# armazenar endereço de página da internet
+url_tickers <- read_html("http://www.fundamentus.com.br/detalhes.php?papel=")
+# obter os papeis
+tickers <- url_tickers %>% 
+  html_nodes("a") %>%
+  html_text() 
+```
+
+Chegou-se ao argumento "a" (no comando **html_nodes**) por meio do aplicativo [SelectorGadget](https://chrome.google.com/webstore/detail/selectorgadget/mhjhnkcfbdhnjickkkdbjoemdmbfginb?hl=pt-BR). Para mais detalhes sobre como usar o aplicativo para fazer *webscraping*, recomendamos o curso [Wrangling Data in the Tidyverse](https://www.coursera.org/learn/tidyverse-data-wrangling?), oferecido pela [Johns Hopkins University](https://www.jhu.edu/) na plataforma educacional [Coursera](https://www.coursera.org/). Vejamos o vetor:
+
+```{r view tickers vector}
+# ver o vetor
+head(tickers, 15)
+tail(tickers, 20)
+```
+
+Como se nota, o primeiro papel é **AALR3**, e o último, **YDUQ3**. Não precisamos dos dados anteriores e posteriores a estes valores. Além disso, há um espaço em branco indesejsável em **AALR3**. É possível que isso se repita em outros papeis. 
+
+```{r subset tickers}
+# selecionar os papeis
+tickers <- tickers[match("AALR3 ", tickers):match("YDUQ3", tickers)]
+# eliminar espaço em branco
+tickers <- str_replace_all(tickers, " ", "")
+```
+
+Por fim, para facilitar que as cotações sejam baixadas no site [Yahoo Finance](https://finance.yahoo.com/), coloquemos o identificador de ações brasileiras em nosso vetor (**.SA**).
+
+```{r add identifier}
+# adicionar caracter
+tickers <- paste0(tickers, sep = ".", "SA")
+head(tickers)
+```
+
+### 3.3. Cotações dos papeis
+
+Queremos obter cotações apenas dos papeis que foram negociados durante todo o período do estudo. O pacote [tidyquant](https://cran.r-project.org/web/packages/tidyquant/tidyquant.pdf) nos socorrerá neste momento.
+
+```{r get stocks data}
+# papeis que foram negociados entre 13 e 17 de setembro de 2018
+stocks_start <-  tq_get(tickers,
+                        get = "stock.prices", 
+                        complete_cases = TRUE, 
+                        from = "2018-09-13",  
+                        to = "2018-09-17")
+# papeis que foram negociados entre 16 e 20 de setembro de 2021
+stocks_end <-  tq_get(tickers,
+                      get = "stock.prices", 
+                      complete_cases = TRUE, 
+                      from = "2021-09-16",  
+                      to = "2021-09-20")
+# selecionar papeis que foram negociados em ambos os períodos
+stocks_start_end <- stocks_start %>%
+  inner_join(stocks_end, by = "symbol") %>%
+  select(symbol) %>%
+  distinct(symbol) %>%
+  pull()
+# obter cotações dos papeis selecionados durante todo o período de negociação
+stocks_both <-  tq_get(stocks_start_end,
+                       get = "stock.prices", 
+                       complete_cases = TRUE, 
+                       from = "2018-09-13", 
+                       to = "2021-09-20")
+kable(head(stocks_both)) %>%
+  kable_styling("striped", "bordered")
+```
+
+Contudo, também queremos apenas papeis com um nível mínimo de negociação. Como se trata de um estudo de correlação entre mercado acionário e taxa de juros, ações muito ilíquidas podem se comportar de uma maneira peculiar, não exatamente por conta de alguma característica da empresa ou de setor em que ela atua, mas simplesmente pelo fato de que se trata de um papel raramente negociado e/ou extremamente volátil. Não queremos que ações com estas características "poluam" noss estudo. Estabeleceremos como nível mínimo de negociação que ela tenha sido negociada pelo menos uma vez em cada semana.
+
+```{r filter stocks by week}
+# selecionar papeis que foram negociados em todas as semanas
+stocks_subset <- stocks_both %>%
+  group_by(symbol, yr = year(date), mon = month(date), week = week(date)) %>%
+  summarise(volume_avg = mean(volume, na.rm = TRUE)) %>%
+  group_by(symbol)  %>%
+  summarise(volume_min = min(volume_avg, na.rm = TRUE)) %>%
+  filter(volume_min > 0) %>%
+  select(symbol) %>%
+  pull()
+stocks_filtered <- stocks_both %>%
+  filter(symbol %in% stocks_subset)
+```
+
+Agora, não precisamos mais do identificador **.SA**.
+
+```{r eliminate identifier}
+# eliminar ".SA" da coluna "symbol"
+stocks_final <- stocks_filtered %>%
+  mutate(symbol = gsub("\\..*","", stocks_filtered$symbol))
+```
+
+Finalmente, podemos calcular os retornos diários das ações durante o período.
+
+```{r stocks daily returns, out.width = "50%"}
+# calcular retornos diários das ações
+daily_returns <- stocks_final %>%
+  group_by(symbol) %>%                          
+  tq_transmute(select = adjusted,
+               mutate_fun = periodReturn,
+               period = 'daily',
+               col_rename = 'stocks_returns')
+kable(head(daily_returns), digits = 4) %>%
+  kable_styling("striped", "bordered", full_width = F)
+```
+
+
+### 3.4. Classificação setorial das empresas
+
+O último banco de dados que obteremos é o de classificação setorial das empresas, presente no site da B3. Ele está em formato compactado. Faremos o *download* dele, descompactaremo-lo e, por fim, faremos com que o R o leia. A desvantagem desse procedimento é que, ao descompactá-lo, o arquivo acaba assumindo um nome inconveniente - **Setorial B3 15-09-2021 (portuguˆs)**. Mas, basta copiar e colar o nome do arquivo, que o R entende perfeitamente. Novamente, há que se tomar cuidado para que o destino do arquivo nos três comandos abaixo (**download**, **unzip** e **read_excel**) esteja corretamente representado, de acordo com o que acontece na máquina.
+
+```{r get sector classification}
+# armazenar url
+url_b3 <- "https://bvmf.bmfbovespa.com.br/InstDados/InformacoesEmpresas/ClassifSetorial.zip"
+# download de arquivo compactado
+download(url_b3, dest = here("brazil", "data", "classif_setor.zip"), mode="wb")
+# descompactar arquivo
+unzip(zipfile = here("brazil", "data", "classif_setor.zip"), 
+      exdir = here("brazil", "data"))
+# read file into R
+setor <- read_excel(
+  here("brazil", "data", "Setorial B3 15-09-2021 (portuguˆs).xlsx"))
+```
+
+Vejamos o arquivo.
+
+```{r view sector classification}
+# visualizar banco de dados
+kable(head(setor), n = 10) %>%
+  kable_styling("striped", "bordered")
+kable(tail(setor, 20)) %>%
+  kable_styling("striped", "bordered")
+```
+
+Como se nota, o banco de dados não vem num formato apropriado, e teremos que fazer uma série de manipulações, para deixá-lo organizado: 1) alterar o nome das colunas; 2) deletar linhas; 3) preencher células em branco; 4) separar valores referentes ao segmento econômico dos valores referentes aos nomes das empresas. Façamos tudo isso agora de uma única vez.
+
+```{r manipulate data frame}
+# alterar o nome das colunas
+colnames <- c("setor_economico", "subsetor", "segmento", "symbol", "listagem")
+colnames(setor) <- colnames
+# deletar as primeiras linhas
+setor <- setor[-c(1:7),]
+# retornar a posição de linhas que ainda precisarão ser excluídas
+match("(DR1) BDR Nível 1", setor$setor_economico) - 1
+nrow(setor)
+# remover as últimas linhas
+setor <- setor[-c(599:616),]
+# preencher células em branco com os valores anterioes
+setor <- setor %>%
+  fill(setor_economico, subsetor)
+# remover linhas que não trazem informação nova
+setor <- setor %>%
+  filter(setor_economico != "SETOR ECONÔMICO")
+# remover linhas nas quais as colunas "segmento", "symbol" e "listagem" apresentam valores em branco
+setor <- setor %>%
+  filter(!(is.na(segmento) & is.na(symbol) & is.na(listagem)))
+# consertar a coluna "segmento"
+setor <- setor %>%
+  mutate(segmento2 = case_when(
+    str_ends(segmento, "[:lower:]") ~ segmento)) %>%
+  fill(segmento2) %>%
+  rename(nome = segmento,
+         segmento = segmento2)
+# remover linhas que apresenta valores em branco na coluna "symbol"
+setor <- setor %>%
+  filter(!is.na(symbol))
+# reorder colunas
+setor <- setor %>%
+  select(setor_economico, subsetor, segmento, nome, symbol, listagem)
+kable(head(setor)) %>%
+  kable_styling("striped", "bordered")
+```
+
+## 4. Montando o banco de dados
+
+Agora que temos tudo de que precisamos, iremos montar nosso banco de dados.
+
+```{r first join}
+# consolidar bancos de dados de ações e títulos públicos
+df <- daily_returns %>%
+  left_join(bond_return, by = "date") %>%
+  drop_na()
+# consolidar banco de dados anterior com o de classificação setorial
+df <-  df %>% 
+  regex_inner_join(setor, by = "symbol") %>% 
+  select(date, nome, symbol.x, setor_economico, subsetor, segmento, 
+         stocks_returns, bonds_returns, -symbol.y, -listagem) %>% 
+  rename(symbol = symbol.x)
+kable(head(df), digits = 4) %>%
+  kable_styling("striped", "bordered")
+```
+
+## 5. Análise de dados
+
+Finalmente podemos "colocar a mão na massa". Computaremos as correlações entre variações nos preços das ações e nas taxas de juros dos títulos de longo prazo, por: 1) setor econômico; 2) subsetor; 3) segmento; 4) papeis isoladamente.
+
+```{r compute correlations}
+# correlação por setor econômico
+cor_sector <- df %>%
+  group_by(setor_economico) %>%
+  summarise(cor = cor(stocks_returns, bonds_returns))
+# correlação por subsetor
+cor_subsector <- df %>%
+  group_by(setor_economico, subsetor) %>%
+  summarise(cor = cor(stocks_returns, bonds_returns))
+# correlação por segmento
+cor_segment <- df %>%
+  group_by(setor_economico, subsetor, segmento) %>%
+  summarise(cor = cor(stocks_returns, bonds_returns))
+# correlação por papeis isoladamente
+cor_stocks <- df %>%
+  group_by(symbol) %>%
+  mutate(cor = cor(stocks_returns, bonds_returns)) %>%
+  select(nome, symbol, setor_economico, subsetor, segmento, cor) %>%
+  distinct(symbol, .keep_all = TRUE)
+```
+
+Feito isso, vejamos os resultados, começando pelas correlações por setor econômico.
+
+```{r correlation sector, out.width = "50%"}
+# ordenar pelas menores correlações negativas por setor econômico
+sort_sector <- cor_sector %>%
+   arrange(desc(cor))
+kable(sort_sector, digits = 4) %>%
+  kable_styling("striped", "bordered", full_width = F, position = "center")
+```
+
+As ações do setor de **Saúde** e **Financeiro** são menos sensíveis a aumento na taxa de juros. De fato, as pessoas não deixam de necessitar de cuidados médicos porque o custo do dinheiro ficou mais caro. Isso também está de acordo com o argumento de que a alta de juros é boa para os bancos, pois eles passam a ganhar mais com *spreads*. Seguradoras, que fazem parte do setor financeiro, também costumam se sair bem em época de aumento dos juros, pois elas têm muito dinheiro em caixa que rendem de acordo com o CDI.
+
+Vejamos as correlações por subsetor.
+
+```{r high correlation subsector, out.width = "50%"}
+# visualizar as maiores correlações negativas por subsetor
+sort_subsector1 <- cor_subsector %>%
+   arrange(cor)
+kable(head(sort_subsector1, 10), digits = 4) %>%
+  kable_styling("striped", "bordered", full_width = F, position = "center")
+```
+
+Vemos representados muitos subsetores que fazem parte do consumo cíclico (Viagens e Lazer, Hoteis e Restaurantes, Autmóveis e Motocicletas). Faz sentido, pois as receitas dessas companhias estão atrelados ao ciclo econômico. Em épocas de juros baixos, as pessoas consomem mais (compram mais carros, viajam mais).
+
+```{r low correlation subsector, out.width = "50%"}
+# visualizar as menores correlações negativas por subsetor
+sort_subsector2 <- cor_subsector %>%
+  arrange(desc(cor))
+kable(head(sort_subsector2, 10), digits = 4) %>%
+  kable_styling("striped", "bordered", full_width = F, position = "center")
+```
+
+Do contrário, como vimos, "Comércio e Distribuição" em Saúde e "Intermediários Financeiros" saíram-se bem em momentos de elevação de juros. Como é a correlação entre ações e juros por segmento econômico?
+
+```{r high correlation segment, out.width = "50%"}
+# visualizar as maiores correlações negativas por segmento
+sort_segment1 <- cor_segment %>%
+   arrange(cor)
+kable(head(sort_segment1, 10), digits = 4) %>%
+  kable_styling("striped", "bordered", full_width = F, position = "center")
+```
+
+Transporte, nas suas mais diversas modalidades (rodoviáiro, aéreo, hidroviário, ferroviário, bem como serviços de apoio e armazenagem) apareceu fortemente representado entre as maiores correlações negativas. Vestuário é um setor conhecido por depender bastante de crédito, que se torna mais oneroso em períodos de juros altos. Agora as maiores correlações positivas (ou as menores correlações negativas):
+
+```{r low correlation segment, out.width = "50%"}
+# visualizar as maiores correlações positivas por segmento
+sort_segment2 <- cor_segment %>%
+  arrange(desc(cor))
+kable(head(sort_segment2, 10), digits = 4) %>%
+  kable_styling("striped", "bordered", full_width = F, position = "center")
+```
+
+Aqui há uma surpresa muito grande. Esperávamos que o setor de incorporações fosse altamente sensível aos juros (ações caindo quando os juros sobem). Mas não foi isso o que aconteceu. As ações deste setor estão entre as menores correlações negativas.
+
+Para finalizar, e ainda mais importante, vejamos como cada papel se comportou individualmente, começando, como de costume, pelas maiores correlações negativas:
+
+```{r high correlation tickers, out.width = "50%"}
+# visualizar as maiores correlações negativas por papeis
+sort_stocks1 <- cor_stocks %>%
+  arrange(cor)
+kable(head(sort_stocks1, 10), digits = 4) %>%
+  kable_styling("striped", "bordered", full_width = F, position = "center")
+```
+
+Vemos uma concentração grande de empresas de utilidade pública (energia elétrica, água e saneamento). Isso acontece porque normalmente são empresas com alto nível de endividamento atrelado ao CDI. Quando os juros aumentam, a dívida dessas empresas aumenta também e, consequentemente, as ações tendem a cair. Quanto às maiores correlações positivas:
+
+```{r low correlation tickers, out.width = "50%"}
+# visualizar as maiores correlações positivas por papeis
+sort_stocks2 <- cor_stocks %>%
+  arrange(desc(cor))
+kable(head(sort_stocks2, 10), digits = 4) %>%
+  kable_styling("striped", "bordered", full_width = F, position = "center")
+```
+
+Como vemos, o consumo de arroz (Camil) e a necessidade de medicamentos (Profarma) não é muito afetada por alta nas taxas de juros. O que destoa é a presença de Tecnisa (TCSA3) entre as menos sensíveis ao aumento de juros.
+
+## 6. Considerações finais
+
+Se a ideia da construção de uma carteira de ações é diversificar, uma das possibilidades de diversificação é a seleção de papeis que são mais e menos sensíveis ao aumento nas taxas de juros. Esse estudo tenta dar alguma contribuição nesse sentido. Evidentemente, as possibilidades de exploração do banco de dados são múltiplas; aqui procuramos apenas apresentar como é possível trilhar um caminho nesse sentido. Uma das limitações deste estudo é o uso da taxa de juros das NTNB-s como *proxy* dos juros reais. O [Valor Data](https://valor.globo.com/valor-data/) calcula os juros reais a partir dos contratos de swap de juro de 360 dias, descontada a projeção de inflação de um ano. Outra limitação é que a função **tq_get** do pacote [tidyquant](https://cran.r-project.org/web/packages/tidyquant/tidyquant.pdf) é bastante lenta para obter dados de cotações dos papeis.
+
+## 7. Agradecimentos
+
+Agradeço ao professor [Marcelo S. Perlin](https://www.linkedin.com/in/marcelo-s-perlin-11b333201/), da [Universidade Federal do Rio Grande do Sul](http://www.ufrgs.br/ufrgs/inicial), que criou o pacote [getTDData](https://cran.r-project.org/web/packages/GetTDData/GetTDData.pdf), por meio do qual obtemos os dados do [Tesouro Direto](https://www.tesourodireto.com.br/), e que me apontou o caminho para sua existência.

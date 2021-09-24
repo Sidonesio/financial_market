@@ -28,7 +28,7 @@ tickers <- url %>%
 # understand vector
 length(tickers)
 head(tickers, 15)
-tail(tickers, 50)
+tail(tickers, 20)
 
 # position of first and last tickers
 match("AALR3 ", tickers)

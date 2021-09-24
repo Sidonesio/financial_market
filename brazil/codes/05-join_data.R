@@ -23,7 +23,7 @@ load(here("brazil", "data", "02-tickers_today.rda"))
 load(here("brazil", "data", "03-stocks.rda"))
 load(here("brazil", "data", "04-setor.rda"))
 
-# join data sets "daily returns" and 
+# join data sets "daily returns" and "bond_return"
 df <- daily_returns %>%
   left_join(bond_return, by = "date") %>%
   drop_na()
